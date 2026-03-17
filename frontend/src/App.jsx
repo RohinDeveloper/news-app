@@ -73,7 +73,7 @@ export default function App() {
     const interests = topics.filter((t) => selected.has(t.id)).map((t) => t.label);
 
     try {
-      const res = await fetch("/api/news", {
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/api/news`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ interests }),
