@@ -1,15 +1,12 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
-const Anthropic = require("@anthropic-ai/sdk");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors());
+app.use(cors({ origin: process.env.FRONTEND_URL || "http://localhost:5173" }));
 app.use(express.json());
-
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 app.post("/api/news", async (req, res) => {
   const { interests } = req.body;
@@ -20,31 +17,42 @@ app.post("/api/news", async (req, res) => {
 
   const interestStr = interests.join(", ");
 
+  const prompt = `You are a news curator. Based on your knowledge of recent world events, find 4 interesting and recent news stories covering these topics: ${interestStr}.
+
+Respond ONLY with a valid JSON array with no markdown, no code fences, no preamble:
+[{"topic":"<one of the interests>","title":"<realistic news headline>","summary":"<one sentence summary>","time":"<e.g. 2 hours ago>","url":"","why":"<one sentence explaining why this matches the user's interest in ${interestStr}>"}]
+
+Return exactly 4 items. Make the headlines realistic and specific.`;
+
   try {
-    const response = await client.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 1500,
-      tools: [{ type: "web_search_20250305", name: "web_search" }],
-      system: `You are a news curator. Find the 4 most recent, interesting news stories from today covering: ${interestStr}.
-Use web search to find real, current headlines. Respond ONLY with a valid JSON array, no markdown or preamble:
-[{"topic":"<interest>","title":"<headline>","summary":"<one sentence>","time":"<e.g. 2 hours ago>","url":"<source URL or empty string>","why":"<one sentence explaining why this matches the user's interest in ${interestStr}>"}]
-Return exactly 4 items. Use real, current news.`,
-      messages: [
-        { role: "user", content: `Find me 4 latest news stories for: ${interestStr}` }
-      ]
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: "llama-3.3-70b-versatile",
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.7,
+        max_tokens: 1500
+      })
     });
 
-    const text = response.content
-      .filter((b) => b.type === "text")
-      .map((b) => b.text)
-      .join("");
+    const data = await response.json();
 
+    if (!response.ok) {
+      console.error("Groq API error:", data);
+      return res.status(500).json({ error: data.error?.message || "Groq API error" });
+    }
+
+    const text = data.choices?.[0]?.message?.content || "";
     const clean = text.replace(/```json|```/g, "").trim();
     const articles = JSON.parse(clean);
 
     res.json({ articles });
   } catch (err) {
-    console.error("Anthropic API error:", err);
+    console.error("Groq error:", err);
     res.status(500).json({ error: "Failed to fetch news. Check your API key and try again." });
   }
 });
