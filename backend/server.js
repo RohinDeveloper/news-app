@@ -28,6 +28,57 @@ async function groq(prompt) {
   return text.replace(/```json|```/g, "").trim();
 }
 
+async function searchDuckDuckGo(query) {
+  // Use DuckDuckGo's HTML search and parse results
+  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query + " news")}&kl=us-en`;
+  const response = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (compatible; NewsAI/1.0)",
+      "Accept": "text/html"
+    }
+  });
+  const html = await response.text();
+
+  // Extract results using regex
+  const results = [];
+  const linkRegex = /class="result__a"[^>]*href="([^"]+)"[^>]*>([^<]+)<\/a>/g;
+  const snippetRegex = /class="result__snippet"[^>]*>([^<]+)</g;
+
+  const links = [...html.matchAll(linkRegex)].slice(0, 8);
+  const snippets = [...html.matchAll(snippetRegex)].map(m => m[1]);
+
+  for (let i = 0; i < links.length; i++) {
+    let url = links[i][1];
+    const title = links[i][2].trim();
+
+    // DuckDuckGo sometimes wraps URLs, decode them
+    if (url.includes("uddg=")) {
+      try {
+        const urlParams = new URLSearchParams(url.split("?")[1]);
+        url = decodeURIComponent(urlParams.get("uddg") || url);
+      } catch {}
+    }
+
+    // Skip DDG internal links
+    if (url.startsWith("/") || url.includes("duckduckgo.com")) continue;
+
+    // Extract source domain
+    let source = "";
+    try {
+      const domain = new URL(url).hostname.replace("www.", "");
+      source = domain.split(".")[0];
+      source = source.charAt(0).toUpperCase() + source.slice(1);
+    } catch { source = "News"; }
+
+    if (title && url.startsWith("http")) {
+      results.push({ source, title, url, snippet: snippets[i] || "" });
+    }
+    if (results.length >= 5) break;
+  }
+
+  return results;
+}
+
 // Standard news feed
 app.post("/api/news", async (req, res) => {
   const { interests } = req.body;
@@ -76,21 +127,20 @@ Return exactly 4 items with realistic, specific headlines.`;
   }
 });
 
-// Related links for a clicked article
+// Real links via DuckDuckGo search
 app.post("/api/links", async (req, res) => {
   const { title, topic } = req.body;
   if (!title) return res.status(400).json({ error: "title is required" });
 
-  const prompt = `A user clicked on this news article: "${title}" (topic: ${topic}).
-Generate 5 realistic related article links from well-known news sources like NYT, BBC, Reuters, The Guardian, Washington Post, CNN, Bloomberg, AP News, Wired, TechCrunch etc.
-Respond ONLY with a valid JSON array, no markdown or preamble:
-[{"source":"<publication name>","title":"<related article headline>","url":"<realistic URL using the correct domain for that publication>"}]
-Return exactly 5 items. Use real publication domains (nytimes.com, bbc.com, reuters.com, theguardian.com, washingtonpost.com, cnn.com, bloomberg.com, apnews.com, wired.com, techcrunch.com etc). Make the URLs realistic but they don't need to be real pages.`;
-
   try {
-    const clean = await groq(prompt);
-    const links = JSON.parse(clean);
-    res.json({ links });
+    const links = await searchDuckDuckGo(`${title} ${topic}`);
+    if (links.length > 0) {
+      return res.json({ links });
+    }
+    // Fallback: try a broader search with just key words
+    const words = title.split(" ").slice(0, 5).join(" ");
+    const fallbackLinks = await searchDuckDuckGo(words);
+    res.json({ links: fallbackLinks });
   } catch (err) {
     console.error("Links error:", err);
     res.status(500).json({ error: "Failed to fetch links." });
